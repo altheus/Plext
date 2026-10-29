@@ -23,6 +23,7 @@ li.seen .t { color:var(--dim); }
 #status { padding:8px; color:var(--dim); font-size:12px; }
 dialog { background:#181818; color:var(--fg); border:1px solid #333; width:min(95vw,520px); }
 dialog p { margin:6px 0; word-break:break-word; }
+#libs label { display:block; padding:4px 0; }
 dialog .row { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
 a { color:var(--acc); }
 </style>
@@ -61,12 +62,14 @@ a { color:var(--acc); }
     <button id="signout">Sign out</button>
   </div>
   <p>Server <select id="server"></select></p>
+  <p>Libraries <span style="color:var(--dim)">(same title in several is merged; best bitrate plays)</span></p>
+  <div id="libs"></div>
   <p>Player <select id="player">
     <option value="is.xyz.mpv">mpv</option>
     <option value="org.videolan.vlc">VLC</option>
     <option value="">ask every time</option>
   </select></p>
-  <div class="row"><button id="reload">Reload library</button><button onclick="settings.close()">Close</button></div>
+  <div class="row"><button id="reload">Load selected</button><button onclick="settings.close()">Close</button></div>
 </dialog>
 
 <dialog id="detail"></dialog>
@@ -84,7 +87,7 @@ const plexHeaders = token => ({ Accept: 'application/json', 'X-Plex-Product': PR
 
 let items = [];          // flat list of playable or browsable items
 let server = null;       // { uri, token, name }
-let view = { facet: null, value: null, show: null }; // drill state
+let view = { value: null, show: null }; // drill state
 
 // ---------- Plex auth (PIN + forward flow) ----------
 async function signIn() {
@@ -134,33 +137,60 @@ const pms = (path, params = {}) => {
 
 // ---------- Library load ----------
 const tags = (m, k) => (m[k] || []).map(t => t.tag);
-function norm(m) {
+function norm(m, lib) {
   return {
-    key: m.ratingKey, type: m.type, title: m.title, year: m.year || null, added: m.addedAt || 0,
+    key: m.ratingKey, keys: [m.ratingKey], guid: m.guid || null, type: m.type, title: m.title, year: m.year || null, added: m.addedAt || 0,
     studio: m.studio || null, rating: m.contentRating || '', summary: m.summary || '',
     actor: tags(m, 'Role'), director: tags(m, 'Director'), writer: tags(m, 'Writer'),
     genre: tags(m, 'Genre'), collection: tags(m, 'Collection'),
     dur: m.duration || 0, offset: m.viewOffset || 0, seen: (m.viewCount || 0) > 0,
-    leaves: m.leafCount, parts: (m.Media || []).flatMap(md => (md.Part || []).map(p => ({ key: p.key, file: p.file, res: md.videoResolution, codec: md.videoCodec, size: p.size }))),
+    leaves: m.leafCount, parts: (m.Media || []).flatMap(md => (md.Part || []).map(p => ({ key: p.key, file: p.file, res: md.videoResolution, codec: md.videoCodec, size: p.size, kbps: md.bitrate || 0, h: md.height || 0, lib }))),
     ep: m.type === 'episode' ? `S${String(m.parentIndex).padStart(2, '0')}E${String(m.index).padStart(2, '0')}` : null,
     show: m.grandparentTitle || null,
   };
 }
+// One row per title: same guid (or same type+title+year) across libraries is merged.
+// Versions are ordered best first: highest bitrate, then height, then library order.
+const byQuality = (a, b) => (b.kbps - a.kbps) || (b.h - a.h);
+function merge(list, idOf) {
+  const out = new Map();
+  for (const it of list) {
+    const id = idOf(it), m = out.get(id);
+    if (!m) { out.set(id, it); continue; }
+    m.keys.push(...it.keys);
+    m.parts.push(...it.parts);
+    for (const f of ['actor', 'director', 'writer', 'genre', 'collection']) m[f] = [...new Set([...m[f], ...it[f]])];
+    m.seen ||= it.seen; m.offset = Math.max(m.offset, it.offset); m.added = Math.max(m.added, it.added);
+    m.leaves = Math.max(m.leaves || 0, it.leaves || 0); m.studio ||= it.studio; m.year ||= it.year;
+  }
+  for (const m of out.values()) m.parts.sort(byQuality);
+  return [...out.values()];
+}
+const titleId = it => it.guid && !it.guid.startsWith('local://') ? it.guid : `${it.type}|${it.title.toLowerCase()}|${it.year || ''}`;
+
+let sections = [];
+const libKey = () => 'libs.' + (LS.get('serverId') || 'default');
+async function pickLibraries() {
+  sections = (await pms('/library/sections')).MediaContainer.Directory.filter(d => d.type === 'movie' || d.type === 'show');
+  const chosen = LS.get(libKey());
+  $('#libs').innerHTML = sections.map(s => `<label><input type="checkbox" value="${s.key}" ${!chosen || chosen.includes(s.key) ? 'checked' : ''}> ${esc(s.title)} <span style="color:var(--dim)">${s.type}</span></label>`).join('');
+  return chosen;
+}
 async function loadLibrary() {
-  status('Loading sections…');
-  const secs = (await pms('/library/sections')).MediaContainer.Directory.filter(d => d.type === 'movie' || d.type === 'show');
+  const keys = [...document.querySelectorAll('#libs input:checked')].map(x => x.value);
+  LS.set(libKey(), keys);
   const all = [];
-  for (const s of secs) {
+  for (const s of sections.filter(s => keys.includes(s.key))) {
     status(`Loading ${s.title}…`);
     const j = await pms(`/library/sections/${s.key}/all`, { includeCollections: 0 });
-    all.push(...(j.MediaContainer.Metadata || []).map(norm));
+    all.push(...(j.MediaContainer.Metadata || []).map(m => norm(m, s.title)));
   }
-  items = all;
+  items = merge(all, titleId);
   render();
   fillCast(); // list endpoints only return a few actors per title; top up in background
 }
 async function fillCast() {
-  const byKey = new Map(items.map(i => [i.key, i]));
+  const byKey = new Map(items.flatMap(i => i.keys.map(k => [k, i])));
   const keys = [...byKey.keys()];
   for (let i = 0; i < keys.length; i += 50) {
     status(`Full cast ${i}/${keys.length}…`);
@@ -168,12 +198,12 @@ async function fillCast() {
       const j = await pms('/library/metadata/' + keys.slice(i, i + 50).join(','));
       for (const m of j.MediaContainer.Metadata || []) {
         const it = byKey.get(m.ratingKey);
-        if (it) { it.actor = tags(m, 'Role'); it.writer = tags(m, 'Writer'); it.director = tags(m, 'Director'); }
+        if (it) for (const [f, k] of [['actor', 'Role'], ['writer', 'Writer'], ['director', 'Director']]) it[f] = [...new Set([...it[f], ...tags(m, k)])];
       }
     } catch (e) { status('Cast top-up failed: ' + e.message); return; }
   }
   status(`${items.length} titles · ${server.name}${server.relay ? ' (relay)' : ''}`);
-  if (view.facet || $('#group').value) render();
+  if ($('#group').value) render();
 }
 
 // ---------- Views ----------
@@ -206,9 +236,10 @@ function render() {
   }
   list.innerHTML = rows.slice(0, 2000).join('') + (rows.length > 2000 ? `<li class="m">…${rows.length - 2000} more, keep typing</li>` : '');
 }
+const ver = p => [p.lib, res(p.res), p.codec, p.kbps ? (p.kbps / 1000).toFixed(1) + ' Mbps' : ''].filter(Boolean).join(' · ');
 const res = r => !r ? '' : /^\d+$/.test(r) ? r + 'p' : r;
 function itemRow(it) {
-  const meta = it.type === 'show' ? `${it.year || ''} · ${it.leaves || '?'} ep` : it.ep ? it.ep : `${it.year || ''} ${res(it.parts[0]?.res)}`;
+  const meta = it.type === 'show' ? `${it.year || ''} · ${it.leaves || '?'} ep` : `${it.ep || it.year || ''} ${res(it.parts[0]?.res)}${it.parts.length > 1 ? ' ×' + it.parts.length : ''}`;
   return `<li data-key="${it.key}" class="${it.seen ? 'seen' : ''}"><span class="t">${esc(it.title)}</span><span class="m">${esc(meta)}</span></li>`;
 }
 
@@ -221,8 +252,12 @@ $('#list').onclick = async e => {
   if (it.type === 'show') {
     if (!server) return alert('Demo data has no episodes');
     status('Loading episodes…');
-    const j = await pms(`/library/metadata/${it.key}/allLeaves`);
-    view.show = it; view.episodes = (j.MediaContainer.Metadata || []).map(norm);
+    const eps = [];
+    for (const k of it.keys) {
+      const j = await pms(`/library/metadata/${k}/allLeaves`);
+      eps.push(...(j.MediaContainer.Metadata || []).map(m => norm(m, j.MediaContainer.librarySectionTitle || '')));
+    }
+    view.show = it; view.episodes = merge(eps, e => e.ep).sort((a, b) => a.ep.localeCompare(b.ep));
     $('#q').value = ''; status(''); return render();
   }
   showDetail(it);
@@ -256,12 +291,14 @@ function showDetail(it) {
   d.innerHTML = `<p><b>${esc(it.show ? it.show + ' ' + it.ep + ' · ' : '')}${esc(it.title)}</b> ${it.year || ''} ${esc(it.rating)} ${mins}</p>` +
     line('Director', it.director) + line('Writer', it.writer) + line('Cast', it.actor.slice(0, 15)) +
     line('Studio', it.studio || []) + line('Genre', it.genre) +
-    (part ? `<p class="m" style="color:var(--dim)">${esc(part.file || '')} · ${esc(part.codec || '')} ${esc(part.res || '')}</p>` : '') +
+    (part ? `<p class="m" style="color:var(--dim)">${esc(part.file || '')}</p>` : '') +
     `<div class="row">` +
     (server && part ? (resume ? `<a href="${intentUrl(it, part, false)}"><button>▶ Resume (${resume})</button></a>` : '') +
       `<a href="${intentUrl(it, part, true)}"><button>▶ Play${resume ? ' from start' : ''}</button></a>` +
       `<button id="copy">Copy URL</button>` : `<button disabled>Play (demo data)</button>`) +
-    `<button onclick="detail.close()">Close</button></div>`;
+    `<button onclick="detail.close()">Close</button></div>` +
+    it.parts.map((p, i) => `<p style="color:var(--dim)">${i ? '' : '★ '}${esc(ver(p))}` +
+      (i && server ? ` <a href="${intentUrl(it, p, true)}">play this</a>` : '') + '</p>').join('');
   const c = d.querySelector('#copy');
   if (c) c.onclick = () => navigator.clipboard.writeText(streamUrl(part)).then(() => c.textContent = 'Copied');
   d.showModal();
@@ -275,10 +312,11 @@ $('#signin').onclick = () => signIn().catch(e => alert(e.message));
 $('#signout').onclick = () => { LS.set('token', null); location.reload(); };
 $('#player').value = LS.get('player') ?? 'is.xyz.mpv';
 $('#player').onchange = e => LS.set('player', e.target.value);
-$('#reload').onclick = () => { settings.close(); loadLibrary().catch(e => status(e.message)); };
+$('#reload').onclick = () => { settings.close(); view = { value: null, show: null }; loadLibrary().catch(e => status(e.message)); };
 $('#demo').onclick = async () => {
   settings.close();
-  items = (await import('./demo.js')).default.map(norm);
+  const d = (await import('./demo.js')).default;
+  items = merge(d.flatMap(l => l.items.map(m => norm(m, l.title))), titleId);
   status(`${items.length} demo titles (playback disabled)`);
   render();
 };
@@ -290,7 +328,9 @@ $('#demo').onclick = async () => {
     $('#acct').textContent = 'Signed in.';
     status('Finding server…');
     server = await discover();
-    await loadLibrary();
+    if (await pickLibraries()) return loadLibrary();
+    status('Pick the libraries to load, then press Load selected.');
+    settings.showModal();
   } catch (e) { status('Error: ' + e.message); }
 })();
 </script>
