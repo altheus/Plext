@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#111">
+<title>TextPlex</title>
+<style>
+:root { --bg:#111; --fg:#ddd; --dim:#888; --line:#222; --acc:#e5a00d; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.35 ui-monospace,Menlo,Consolas,monospace; }
+header { position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line); padding:8px; display:flex; gap:6px; flex-wrap:wrap; }
+input, select, button { font:inherit; background:#1b1b1b; color:var(--fg); border:1px solid #333; border-radius:4px; padding:6px; }
+#q { flex:1 1 100%; }
+button { cursor:pointer; }
+#crumb { padding:4px 8px; color:var(--acc); }
+#crumb:empty { display:none; }
+ul { list-style:none; margin:0; padding:0; }
+li { padding:7px 8px; border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:baseline; cursor:pointer; }
+li .t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+li .m { color:var(--dim); font-size:12px; white-space:nowrap; }
+li.seen .t { color:var(--dim); }
+#status { padding:8px; color:var(--dim); font-size:12px; }
+dialog { background:#181818; color:var(--fg); border:1px solid #333; width:min(95vw,520px); }
+dialog p { margin:6px 0; word-break:break-word; }
+dialog .row { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+a { color:var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <input id="q" type="search" placeholder="filter…" autocomplete="off">
+  <select id="group">
+    <option value="">titles</option>
+    <option value="actor">actor</option>
+    <option value="director">director</option>
+    <option value="writer">writer</option>
+    <option value="studio">studio / network</option>
+    <option value="genre">genre</option>
+    <option value="decade">decade</option>
+    <option value="collection">collection</option>
+  </select>
+  <select id="sort">
+    <option value="title">a–z</option>
+    <option value="year">year</option>
+    <option value="added">added</option>
+    <option value="count">count</option>
+  </select>
+  <button id="settingsBtn">⚙</button>
+</header>
+<div id="crumb"></div>
+<ul id="list"></ul>
+<div id="status"></div>
+
+<dialog id="settings">
+  <p><b>TextPlex</b></p>
+  <p id="acct">Not signed in.</p>
+  <div class="row">
+    <button id="signin">Sign in with Plex</button>
+    <button id="demo">Use demo data</button>
+    <button id="signout">Sign out</button>
+  </div>
+  <p>Server <select id="server"></select></p>
+  <p>Player <select id="player">
+    <option value="is.xyz.mpv">mpv</option>
+    <option value="org.videolan.vlc">VLC</option>
+    <option value="">ask every time</option>
+  </select></p>
+  <div class="row"><button id="reload">Reload library</button><button onclick="settings.close()">Close</button></div>
+</dialog>
+
+<dialog id="detail"></dialog>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const LS = {
+  get: k => { try { return JSON.parse(localStorage.getItem('tp.' + k)); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem('tp.' + k, JSON.stringify(v)); } catch {} },
+};
+const PRODUCT = 'TextPlex';
+const CID = LS.get('cid') || (LS.set('cid', crypto.randomUUID()), LS.get('cid'));
+const plexHeaders = token => ({ Accept: 'application/json', 'X-Plex-Product': PRODUCT, 'X-Plex-Client-Identifier': CID, ...(token ? { 'X-Plex-Token': token } : {}) });
+
+let items = [];          // flat list of playable or browsable items
+let server = null;       // { uri, token, name }
+let view = { facet: null, value: null, show: null }; // drill state
+
+// ---------- Plex auth (PIN + forward flow) ----------
+async function signIn() {
+  const r = await fetch('https://plex.tv/api/v2/pins?strong=true', { method: 'POST', headers: plexHeaders() });
+  const pin = await r.json();
+  LS.set('pin', { id: pin.id, code: pin.code });
+  const p = new URLSearchParams({ clientID: CID, code: pin.code, forwardUrl: location.href.split('#')[0], 'context[device][product]': PRODUCT });
+  location.href = 'https://app.plex.tv/auth#?' + p.toString();
+}
+async function finishSignIn() {
+  const pin = LS.get('pin');
+  if (!pin) return;
+  LS.set('pin', null);
+  const r = await fetch(`https://plex.tv/api/v2/pins/${pin.id}?code=${pin.code}`, { headers: plexHeaders() });
+  const j = await r.json();
+  if (j.authToken) LS.set('token', j.authToken);
+}
+
+// ---------- Server discovery: first reachable HTTPS connection wins ----------
+async function discover() {
+  const token = LS.get('token');
+  const r = await fetch('https://clients.plex.tv/api/v2/resources?includeHttps=1&includeRelay=1', { headers: plexHeaders(token) });
+  const servers = (await r.json()).filter(x => (x.provides || '').includes('server'));
+  const sel = $('#server');
+  sel.innerHTML = servers.map((s, i) => `<option value="${i}">${esc(s.name)}</option>`).join('');
+  const want = Math.max(0, servers.findIndex(s => s.clientIdentifier === LS.get('serverId')));
+  sel.value = want;
+  sel.onchange = () => { LS.set('serverId', servers[sel.value].clientIdentifier); location.reload(); };
+  const s = servers[want];
+  if (!s) throw new Error('No servers on this account');
+  // local https first, then remote, relay last; skip plain http (mixed content)
+  const conns = s.connections.filter(c => c.protocol === 'https')
+    .sort((a, b) => (a.relay - b.relay) || (b.local - a.local));
+  for (const c of conns) {
+    try {
+      const ok = await fetch(c.uri + '/identity', { headers: plexHeaders(s.accessToken), signal: AbortSignal.timeout(4000) });
+      if (ok.ok) return { uri: c.uri, token: s.accessToken, name: s.name, relay: c.relay };
+    } catch {}
+  }
+  throw new Error(`Could not reach ${s.name}. Tried: ` + conns.map(c => c.uri).join(', '));
+}
+const pms = (path, params = {}) => {
+  const u = new URL(server.uri + path);
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  return fetch(u, { headers: plexHeaders(server.token) }).then(r => { if (!r.ok) throw new Error(r.status + ' ' + path); return r.json(); });
+};
+
+// ---------- Library load ----------
+const tags = (m, k) => (m[k] || []).map(t => t.tag);
+function norm(m) {
+  return {
+    key: m.ratingKey, type: m.type, title: m.title, year: m.year || null, added: m.addedAt || 0,
+    studio: m.studio || null, rating: m.contentRating || '', summary: m.summary || '',
+    actor: tags(m, 'Role'), director: tags(m, 'Director'), writer: tags(m, 'Writer'),
+    genre: tags(m, 'Genre'), collection: tags(m, 'Collection'),
+    dur: m.duration || 0, offset: m.viewOffset || 0, seen: (m.viewCount || 0) > 0,
+    leaves: m.leafCount, parts: (m.Media || []).flatMap(md => (md.Part || []).map(p => ({ key: p.key, file: p.file, res: md.videoResolution, codec: md.videoCodec, size: p.size }))),
+    ep: m.type === 'episode' ? `S${String(m.parentIndex).padStart(2, '0')}E${String(m.index).padStart(2, '0')}` : null,
+    show: m.grandparentTitle || null,
+  };
+}
+async function loadLibrary() {
+  status('Loading sections…');
+  const secs = (await pms('/library/sections')).MediaContainer.Directory.filter(d => d.type === 'movie' || d.type === 'show');
+  const all = [];
+  for (const s of secs) {
+    status(`Loading ${s.title}…`);
+    const j = await pms(`/library/sections/${s.key}/all`, { includeCollections: 0 });
+    all.push(...(j.MediaContainer.Metadata || []).map(norm));
+  }
+  items = all;
+  render();
+  fillCast(); // list endpoints only return a few actors per title; top up in background
+}
+async function fillCast() {
+  const byKey = new Map(items.map(i => [i.key, i]));
+  const keys = [...byKey.keys()];
+  for (let i = 0; i < keys.length; i += 50) {
+    status(`Full cast ${i}/${keys.length}…`);
+    try {
+      const j = await pms('/library/metadata/' + keys.slice(i, i + 50).join(','));
+      for (const m of j.MediaContainer.Metadata || []) {
+        const it = byKey.get(m.ratingKey);
+        if (it) { it.actor = tags(m, 'Role'); it.writer = tags(m, 'Writer'); it.director = tags(m, 'Director'); }
+      }
+    } catch (e) { status('Cast top-up failed: ' + e.message); return; }
+  }
+  status(`${items.length} titles · ${server.name}${server.relay ? ' (relay)' : ''}`);
+  if (view.facet || $('#group').value) render();
+}
+
+// ---------- Views ----------
+const facetOf = (it, f) => f === 'decade' ? (it.year ? [Math.floor(it.year / 10) * 10 + 's'] : [])
+  : f === 'studio' ? (it.studio ? [it.studio] : []) : it[f] || [];
+const match = (s, q) => !q || s.toLowerCase().includes(q);
+
+function render() {
+  const q = $('#q').value.trim().toLowerCase();
+  const g = $('#group').value, sort = $('#sort').value;
+  const list = $('#list');
+  let rows;
+  if (view.show) {
+    $('#crumb').textContent = '‹ ' + view.show.title;
+    rows = view.episodes.filter(e => match(e.title + ' ' + e.ep, q)).map(itemRow);
+  } else if (g && !view.value) {
+    $('#crumb').textContent = '';
+    const counts = new Map();
+    for (const it of items) for (const v of facetOf(it, g)) counts.set(v, (counts.get(v) || 0) + 1);
+    let facets = [...counts].filter(([v]) => match(v, q));
+    facets.sort(sort === 'count' ? (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]) : (a, b) => a[0].localeCompare(b[0]));
+    rows = facets.map(([v, n]) => `<li data-facet="${esc(v)}"><span class="t">${esc(v)}</span><span class="m">${n}</span></li>`);
+  } else {
+    $('#crumb').textContent = view.value ? `‹ ${g}: ${view.value}` : '';
+    let its = view.value ? items.filter(it => facetOf(it, g).includes(view.value)) : items;
+    // free text matches title and every facet, so "nolan" or "a24" works without switching group
+    its = its.filter(it => match([it.title, it.year, it.studio, ...it.actor, ...it.director, ...it.writer, ...it.genre].join(' '), q));
+    const cmp = { title: (a, b) => a.title.localeCompare(b.title), year: (a, b) => (b.year || 0) - (a.year || 0), added: (a, b) => b.added - a.added }[sort] || ((a, b) => a.title.localeCompare(b.title));
+    rows = its.sort(cmp).map(itemRow);
+  }
+  list.innerHTML = rows.slice(0, 2000).join('') + (rows.length > 2000 ? `<li class="m">…${rows.length - 2000} more, keep typing</li>` : '');
+}
+const res = r => !r ? '' : /^\d+$/.test(r) ? r + 'p' : r;
+function itemRow(it) {
+  const meta = it.type === 'show' ? `${it.year || ''} · ${it.leaves || '?'} ep` : it.ep ? it.ep : `${it.year || ''} ${res(it.parts[0]?.res)}`;
+  return `<li data-key="${it.key}" class="${it.seen ? 'seen' : ''}"><span class="t">${esc(it.title)}</span><span class="m">${esc(meta)}</span></li>`;
+}
+
+$('#list').onclick = async e => {
+  const li = e.target.closest('li');
+  if (!li) return;
+  if (li.dataset.facet) { view.value = li.dataset.facet; $('#q').value = ''; return render(); }
+  const it = (view.episodes || []).find(x => x.key === li.dataset.key) || items.find(x => x.key === li.dataset.key);
+  if (!it) return;
+  if (it.type === 'show') {
+    if (!server) return alert('Demo data has no episodes');
+    status('Loading episodes…');
+    const j = await pms(`/library/metadata/${it.key}/allLeaves`);
+    view.show = it; view.episodes = (j.MediaContainer.Metadata || []).map(norm);
+    $('#q').value = ''; status(''); return render();
+  }
+  showDetail(it);
+};
+$('#crumb').onclick = () => { if (view.show) { view.show = null; view.episodes = null; } else view.value = null; render(); };
+$('#q').oninput = render;
+$('#group').onchange = () => { view.value = null; render(); };
+$('#sort').onchange = render;
+
+// ---------- Direct play hand-off ----------
+function streamUrl(part) {
+  const u = new URL(server.uri + part.key);
+  u.searchParams.set('X-Plex-Token', server.token);
+  return u.toString();
+}
+function intentUrl(it, part, fromStart) {
+  const u = new URL(streamUrl(part));
+  const pkg = LS.get('player') ?? 'is.xyz.mpv';
+  const title = it.show ? `${it.show} ${it.ep} ${it.title}` : `${it.title}${it.year ? ' (' + it.year + ')' : ''}`;
+  const extras = [`S.title=${encodeURIComponent(title)}`];
+  if (it.offset && !fromStart) extras.push(pkg === 'org.videolan.vlc' ? `l.position=${it.offset}` : `i.position=${it.offset}`);
+  return `intent://${u.host}${u.pathname}${u.search}#Intent;scheme=${u.protocol.slice(0, -1)};action=android.intent.action.VIEW;type=video/*;` +
+    (pkg ? `package=${pkg};` : '') + extras.join(';') + ';end';
+}
+function showDetail(it) {
+  const d = $('#detail');
+  const part = it.parts[0];
+  const line = (k, v) => v && v.length ? `<p><b>${k}</b> ${esc([].concat(v).join(', '))}</p>` : '';
+  const mins = it.dur ? Math.round(it.dur / 60000) + ' min' : '';
+  const resume = it.offset ? Math.round(it.offset / 60000) + ' min in' : '';
+  d.innerHTML = `<p><b>${esc(it.show ? it.show + ' ' + it.ep + ' · ' : '')}${esc(it.title)}</b> ${it.year || ''} ${esc(it.rating)} ${mins}</p>` +
+    line('Director', it.director) + line('Writer', it.writer) + line('Cast', it.actor.slice(0, 15)) +
+    line('Studio', it.studio || []) + line('Genre', it.genre) +
+    (part ? `<p class="m" style="color:var(--dim)">${esc(part.file || '')} · ${esc(part.codec || '')} ${esc(part.res || '')}</p>` : '') +
+    `<div class="row">` +
+    (server && part ? (resume ? `<a href="${intentUrl(it, part, false)}"><button>▶ Resume (${resume})</button></a>` : '') +
+      `<a href="${intentUrl(it, part, true)}"><button>▶ Play${resume ? ' from start' : ''}</button></a>` +
+      `<button id="copy">Copy URL</button>` : `<button disabled>Play (demo data)</button>`) +
+    `<button onclick="detail.close()">Close</button></div>`;
+  const c = d.querySelector('#copy');
+  if (c) c.onclick = () => navigator.clipboard.writeText(streamUrl(part)).then(() => c.textContent = 'Copied');
+  d.showModal();
+}
+
+// ---------- Settings / boot ----------
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const status = s => $('#status').textContent = s;
+$('#settingsBtn').onclick = () => settings.showModal();
+$('#signin').onclick = () => signIn().catch(e => alert(e.message));
+$('#signout').onclick = () => { LS.set('token', null); location.reload(); };
+$('#player').value = LS.get('player') ?? 'is.xyz.mpv';
+$('#player').onchange = e => LS.set('player', e.target.value);
+$('#reload').onclick = () => { settings.close(); loadLibrary().catch(e => status(e.message)); };
+$('#demo').onclick = async () => {
+  settings.close();
+  items = (await import('./demo.js')).default.map(norm);
+  status(`${items.length} demo titles (playback disabled)`);
+  render();
+};
+
+(async () => {
+  try {
+    await finishSignIn();
+    if (!LS.get('token')) { status('Open ⚙ to sign in, or try demo data.'); return settings.showModal(); }
+    $('#acct').textContent = 'Signed in.';
+    status('Finding server…');
+    server = await discover();
+    await loadLibrary();
+  } catch (e) { status('Error: ' + e.message); }
+})();
+</script>
+</body>
+</html>
