@@ -33,6 +33,7 @@ a { color:var(--acc); }
   <input id="q" type="search" placeholder="filter…" autocomplete="off">
   <select id="group">
     <option value="">titles</option>
+    <option value="deck">on deck</option>
     <option value="actor">actor</option>
     <option value="director">director</option>
     <option value="writer">writer</option>
@@ -146,7 +147,7 @@ function norm(m, lib) {
     dur: m.duration || 0, offset: m.viewOffset || 0, seen: (m.viewCount || 0) > 0,
     leaves: m.leafCount, parts: (m.Media || []).flatMap(md => (md.Part || []).map(p => ({ key: p.key, file: p.file, res: md.videoResolution, codec: md.videoCodec, size: p.size, kbps: md.bitrate || 0, h: md.height || 0, lib }))),
     ep: m.type === 'episode' ? `S${String(m.parentIndex).padStart(2, '0')}E${String(m.index).padStart(2, '0')}` : null,
-    show: m.grandparentTitle || null,
+    show: m.grandparentTitle || null, showGuid: m.grandparentGuid || null, showKey: m.grandparentRatingKey || null,
   };
 }
 // One row per title: same guid (or same type+title+year) across libraries is merged.
@@ -206,6 +207,45 @@ async function fillCast() {
   if ($('#group').value) render();
 }
 
+// ---------- On Deck and watch state ----------
+let deck = null;
+async function loadDeck() {
+  status('Loading On Deck…');
+  const j = await pms('/library/onDeck');
+  deck = (j.MediaContainer.Metadata || []).map(m => norm(m, j.MediaContainer.librarySectionTitle || ''));
+  status(`${deck.length} on deck`);
+  render();
+}
+// Swap a deck item for the merged copy so the best-bitrate version plays.
+async function bestCopy(it) {
+  if (it.type !== 'episode') return items.find(x => x.keys.includes(it.key) || titleId(x) === titleId(it)) || it;
+  const show = items.find(x => x.type === 'show' && (x.keys.includes(it.showKey) || (it.showGuid && x.guid === it.showGuid)));
+  if (!show) return it;
+  const eps = await episodesOf(show);
+  return { ...(eps.find(e => e.ep === it.ep) || it), offset: it.offset };
+}
+async function episodesOf(show) {
+  const eps = [];
+  for (const k of show.keys) {
+    const j = await pms(`/library/metadata/${k}/allLeaves`);
+    eps.push(...(j.MediaContainer.Metadata || []).map(m => norm(m, j.MediaContainer.librarySectionTitle || '')));
+  }
+  return merge(eps, e => e.ep).sort((a, b) => a.ep.localeCompare(b.ep));
+}
+// Applied to every copy, so a merged title is watched everywhere.
+async function act(it, what) {
+  for (const k of it.keys) {
+    const u = new URL(server.uri + (what === 'remove' ? '/actions/removeFromContinueWatching' : what === 'watched' ? '/:/scrobble' : '/:/unscrobble'));
+    u.searchParams.set(what === 'remove' ? 'ratingKey' : 'key', k);
+    if (what !== 'remove') u.searchParams.set('identifier', 'com.plexapp.plugins.library');
+    const r = await fetch(u, { method: what === 'remove' ? 'PUT' : 'GET', headers: plexHeaders(server.token) });
+    if (!r.ok) throw new Error(`${what} failed: ${r.status}`);
+  }
+  it.seen = what === 'watched' ? true : what === 'unwatched' ? false : it.seen;
+  if (what !== 'unwatched') it.offset = what === 'watched' ? 0 : it.offset;
+  if ($('#group').value === 'deck') await loadDeck(); else render();
+}
+
 // ---------- Views ----------
 const facetOf = (it, f) => f === 'decade' ? (it.year ? [Math.floor(it.year / 10) * 10 + 's'] : [])
   : f === 'studio' ? (it.studio ? [it.studio] : []) : it[f] || [];
@@ -216,7 +256,11 @@ function render() {
   const g = $('#group').value, sort = $('#sort').value;
   const list = $('#list');
   let rows;
-  if (view.show) {
+  if (g === 'deck' && !view.show) {
+    $('#crumb').textContent = '';
+    if (!deck) { rows = []; if (server) loadDeck().catch(e => status(e.message)); }
+    else rows = deck.filter(e => match([e.show, e.title, e.ep].join(' '), q)).map(e => itemRow(e, true));
+  } else if (view.show) {
     $('#crumb').textContent = '‹ ' + view.show.title;
     rows = view.episodes.filter(e => match(e.title + ' ' + e.ep, q)).map(itemRow);
   } else if (g && !view.value) {
@@ -238,33 +282,31 @@ function render() {
 }
 const ver = p => [p.lib, res(p.res), p.codec, p.kbps ? (p.kbps / 1000).toFixed(1) + ' Mbps' : ''].filter(Boolean).join(' · ');
 const res = r => !r ? '' : /^\d+$/.test(r) ? r + 'p' : r;
-function itemRow(it) {
+function itemRow(it, deckRow) {
   const meta = it.type === 'show' ? `${it.year || ''} · ${it.leaves || '?'} ep` : `${it.ep || it.year || ''} ${res(it.parts[0]?.res)}${it.parts.length > 1 ? ' ×' + it.parts.length : ''}`;
-  return `<li data-key="${it.key}" class="${it.seen ? 'seen' : ''}"><span class="t">${esc(it.title)}</span><span class="m">${esc(meta)}</span></li>`;
+  const name = deckRow && it.show ? `${it.show} · ${it.title}` : it.title;
+  return `<li data-key="${it.key}" class="${it.seen && !deckRow ? 'seen' : ''}"><span class="t">${esc(name)}</span><span class="m">${esc(meta)}</span></li>`;
 }
 
 $('#list').onclick = async e => {
   const li = e.target.closest('li');
   if (!li) return;
   if (li.dataset.facet) { view.value = li.dataset.facet; $('#q').value = ''; return render(); }
-  const it = (view.episodes || []).find(x => x.key === li.dataset.key) || items.find(x => x.key === li.dataset.key);
+  let it = (view.episodes || []).find(x => x.key === li.dataset.key) || items.find(x => x.key === li.dataset.key);
+  const fromDeck = $('#group').value === 'deck' && !view.show && deck?.find(x => x.key === li.dataset.key);
+  if (fromDeck) { status('Finding best copy…'); it = await bestCopy(fromDeck); status(''); return showDetail(it, fromDeck); }
   if (!it) return;
   if (it.type === 'show') {
     if (!server) return alert('Demo data has no episodes');
     status('Loading episodes…');
-    const eps = [];
-    for (const k of it.keys) {
-      const j = await pms(`/library/metadata/${k}/allLeaves`);
-      eps.push(...(j.MediaContainer.Metadata || []).map(m => norm(m, j.MediaContainer.librarySectionTitle || '')));
-    }
-    view.show = it; view.episodes = merge(eps, e => e.ep).sort((a, b) => a.ep.localeCompare(b.ep));
+    view.show = it; view.episodes = await episodesOf(it);
     $('#q').value = ''; status(''); return render();
   }
   showDetail(it);
 };
 $('#crumb').onclick = () => { if (view.show) { view.show = null; view.episodes = null; } else view.value = null; render(); };
 $('#q').oninput = render;
-$('#group').onchange = () => { view.value = null; render(); };
+$('#group').onchange = () => { view.value = null; view.show = null; if ($('#group').value === 'deck') deck = null; render(); };
 $('#sort').onchange = render;
 
 // ---------- Direct play hand-off ----------
@@ -282,7 +324,7 @@ function intentUrl(it, part, fromStart) {
   return `intent://${u.host}${u.pathname}${u.search}#Intent;scheme=${u.protocol.slice(0, -1)};action=android.intent.action.VIEW;type=video/*;` +
     (pkg ? `package=${pkg};` : '') + extras.join(';') + ';end';
 }
-function showDetail(it) {
+function showDetail(it, deckItem) {
   const d = $('#detail');
   const part = it.parts[0];
   const line = (k, v) => v && v.length ? `<p><b>${k}</b> ${esc([].concat(v).join(', '))}</p>` : '';
@@ -297,10 +339,17 @@ function showDetail(it) {
       `<a href="${intentUrl(it, part, true)}"><button>▶ Play${resume ? ' from start' : ''}</button></a>` +
       `<button id="copy">Copy URL</button>` : `<button disabled>Play (demo data)</button>`) +
     `<button onclick="detail.close()">Close</button></div>` +
+    (server ? `<div class="row"><button data-act="${it.seen ? 'unwatched' : 'watched'}">Mark ${it.seen ? 'unwatched' : 'watched'}</button>` +
+      (deckItem ? `<button data-act="remove">Remove from On Deck</button>` : '') + `</div>` : '') +
     it.parts.map((p, i) => `<p style="color:var(--dim)">${i ? '' : '★ '}${esc(ver(p))}` +
       (i && server ? ` <a href="${intentUrl(it, p, true)}">play this</a>` : '') + '</p>').join('');
   const c = d.querySelector('#copy');
   if (c) c.onclick = () => navigator.clipboard.writeText(streamUrl(part)).then(() => c.textContent = 'Copied');
+  d.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
+    b.disabled = true;
+    // remove targets the deck entry itself; watched state goes to every merged copy
+    act(b.dataset.act === 'remove' ? deckItem : it, b.dataset.act).then(() => d.close(), e => { b.textContent = e.message; });
+  });
   d.showModal();
 }
 
