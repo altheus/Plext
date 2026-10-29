@@ -25,4 +25,6 @@ One static page, no backend. Your Plex token stays in your browser.
 
 ## Versioning
 
-Starts at v0.00001 and goes up by 0.00001 with every release. The version is the `VERSION` constant in `index.html`, shown in ⚙, and each release commit is tagged `vX.XXXXX`.
+Starts at v0.00001 and goes up by 0.00001 with every release. The version shows in ⚙.
+
+Release with `./release.sh`: it bumps `VERSION`, snapshots the app into `v/<version>/` and keeps only the newest 10. Each snapshot stays live at `…/Plext/v/<version>/` as a rollback, and ⚙ links to them.
