@@ -2,75 +2,191 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#111">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#13161a" media="(prefers-color-scheme: dark)">
 <title>TextPlex</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@300;400;500;600&family=Outfit:wght@300;400;600&display=swap">
 <style>
-:root { --bg:#111; --fg:#ddd; --dim:#888; --line:#222; --acc:#e5a00d; }
-* { box-sizing:border-box; }
-body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.35 ui-monospace,Menlo,Consolas,monospace; }
-header { position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line); padding:8px; display:flex; gap:6px; flex-wrap:wrap; }
-input, select, button { font:inherit; background:#1b1b1b; color:var(--fg); border:1px solid #333; border-radius:4px; padding:6px; }
-#q { flex:1 1 100%; }
-button { cursor:pointer; }
-#crumb { padding:4px 8px; color:var(--acc); }
-#crumb:empty { display:none; }
-ul { list-style:none; margin:0; padding:0; }
-li { padding:7px 8px; border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:baseline; cursor:pointer; }
-li .t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-li .m { color:var(--dim); font-size:12px; white-space:nowrap; }
-li.seen .t { color:var(--dim); }
-#status { padding:8px; color:var(--dim); font-size:12px; }
-dialog { background:#181818; color:var(--fg); border:1px solid #333; width:min(95vw,520px); }
-dialog p { margin:6px 0; word-break:break-word; }
-#libs label { display:block; padding:4px 0; }
-dialog .row { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
-a { color:var(--acc); }
+/* The library set as a book index: headwords, subentries, locators. Spec: /mnt/project-files/design/textplex-type.html */
+:root {
+  --bg: #ffffff; --fg: #14171b; --dim: #69717c; --faint: #9aa1ab; --rule: #dde1e6; --rule-strong: #14171b; --accent: #9a5f00; --well: #f3f4f6;
+  --words: "IBM Plex Sans Condensed", "Roboto Condensed", "Arial Narrow", sans-serif;
+  --heads: "Outfit", "IBM Plex Sans Condensed", sans-serif;
+  --nums: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --s-label: 11px; --s-meta: 12.5px; --s-row: 15px; --s-head: 17px; --s-title: 22px;
+  --row: 44px; --ctl: 48px; --step: 16px;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --bg: #13161a; --fg: #e3e6ea; --dim: #8a929d; --faint: #5c636d; --rule: #252a31; --rule-strong: #e3e6ea; --accent: #e5a00d; --well: #1b1f24; color-scheme: dark } }
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: var(--s-row)/1.25 var(--words); -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent;
+  display: flex; flex-direction: column; min-height: 100dvh; }
+button, input, select { font: inherit; color: inherit; }
+ul { list-style: none; margin: 0; padding: 0; }
+
+#status { padding: calc(10px + env(safe-area-inset-top, 0px)) 16px 8px; font: var(--s-meta)/1.4 var(--nums); color: var(--dim); }
+#status:empty { display: none; }
+#list { flex: 1; }
+
+/* rows: words left, locators right in fixed mono columns; each row is one full-width target */
+.row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 4ch 4ch; column-gap: 12px; align-items: baseline;
+  min-height: var(--row); padding: 12px 16px 11px calc(16px + var(--lvl, 0) * var(--step)); cursor: pointer; }
+.row:active { background: var(--well); }
+.t { min-width: 0; padding-left: 1em; text-indent: -1em; overflow-wrap: anywhere; } /* hanging indent; never truncated */
+.a { font-weight: 300; color: var(--dim); }
+.n { font: var(--s-meta)/1 var(--nums); color: var(--dim); text-align: right; white-space: nowrap; }
+.n.k { color: var(--fg); font-weight: 500; }
+.seen .t, .seen .n { color: var(--dim); }
+.mid::before { content: ""; position: absolute; left: 6px; top: 12px; bottom: 11px; width: 3px; border-radius: 2px; background: var(--accent); }
+.left { display: block; font: var(--s-meta)/1.5 var(--nums); color: var(--accent); text-indent: 0; }
+.letter { display: flex; align-items: end; height: 32px; padding: 0 16px 5px; font: 600 var(--s-label)/1 var(--nums); letter-spacing: .1em; color: var(--dim); border-bottom: 1px solid var(--rule); }
+.more .t { color: var(--dim); }
+
+/* index groups: headword + subentries; hairline only between headwords */
+.grp + .grp { border-top: 1px solid var(--rule); }
+summary { list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary.row { grid-template-columns: minmax(0, 1fr) auto; font: var(--s-head)/1.25 var(--heads); }
+summary.row b { font-weight: 600; }
+summary .t::before { content: "+"; display: inline-block; width: 1em; text-indent: 0; font: 400 var(--s-row) var(--nums); color: var(--faint); }
+details[open] > summary .t::before { content: "\2212"; color: var(--accent); }
+details[open] > ul { padding-bottom: 8px; }
+.season summary.row { font: 500 var(--s-row)/1.25 var(--words); }
+.season summary .y { font-weight: 400; color: var(--dim); }
+.ep { grid-template-columns: 3ch minmax(0, 1fr) 4ch; }
+.ep .num { font: var(--s-meta)/1 var(--nums); color: var(--dim); }
+.showhead { padding: 16px 16px 12px; display: grid; gap: 6px; border-bottom: 1px solid var(--rule); }
+.showhead img { width: 100%; max-height: 180px; object-fit: cover; border-radius: 4px; background: var(--well); margin-bottom: 6px; }
+.showhead .h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font: 600 var(--s-head)/1.2 var(--heads); }
+
+/* bottom control bar: facets (or crumb) above the filter, in thumb reach */
+.bar { position: sticky; bottom: 0; z-index: 5; background: var(--bg); border-top: 2px solid var(--rule-strong);
+  padding: 0 max(8px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(8px, env(safe-area-inset-left, 0px)); }
+.facets { display: flex; overflow-x: auto; scrollbar-width: none; height: var(--ctl); }
+.facets button { flex: none; min-width: 48px; padding: 0 10px; border: 0; background: none; cursor: pointer;
+  font: 500 var(--s-label)/1 var(--words); letter-spacing: .07em; text-transform: uppercase; color: var(--dim); }
+.facets button[aria-pressed="true"] { color: var(--fg); box-shadow: inset 0 -2px 0 var(--accent); }
+#crumb { display: flex; align-items: center; gap: 6px; width: 100%; height: var(--ctl); padding: 0 8px; border: 0; background: none; cursor: pointer; text-align: left; font-size: var(--s-row); }
+#crumb .back { color: var(--dim); white-space: nowrap; }
+#crumb b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#crumb .n { margin-left: auto; }
+.pivoted .facets, .bar:not(.pivoted) #crumb { display: none; }
+.qrow { display: flex; align-items: center; height: var(--ctl); border-top: 1px solid var(--rule); }
+#q { flex: 1; min-width: 0; height: 100%; border: 0; background: none; padding: 0 8px; font: var(--s-head) var(--words); outline: none; }
+#q::placeholder { color: var(--faint); }
+#q::-webkit-search-cancel-button { display: none; }
+#sort { height: 100%; border: 0; background: none; padding: 0 8px; font: var(--s-meta) var(--nums); color: var(--dim); appearance: none; cursor: pointer; text-align: right; }
+#settingsBtn { width: 48px; height: 100%; border: 0; background: none; font: 600 18px/1 var(--nums); color: var(--dim); cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* dialogs: full-height sheets */
+dialog { width: 100%; max-width: 520px; max-height: 100dvh; height: 100dvh; margin: 0 auto; padding: 0; border: 0; background: var(--bg); color: var(--fg); }
+dialog::backdrop { background: rgb(0 0 0 / .5); }
+.sheet { display: grid; gap: 16px; padding: calc(20px + env(safe-area-inset-top, 0px)) 0 calc(12px + env(safe-area-inset-bottom, 0px)); }
+.pad { padding: 0 16px; }
+.head { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 14px; align-items: end; }
+.head.noimg { grid-template-columns: minmax(0, 1fr); }
+.head img { width: 84px; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 4px; background: var(--well); }
+.sheet h2 { margin: 0; font: 600 var(--s-title)/1.15 var(--heads); text-wrap: balance; overflow-wrap: anywhere; }
+.facts { font: var(--s-meta)/1.4 var(--nums); color: var(--dim); margin-top: 6px; }
+.play { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.play a { display: grid; place-items: center; height: 52px; border-radius: 8px; text-decoration: none; text-align: center; font: 600 var(--s-row)/1 var(--words); border: 1px solid var(--rule); color: var(--fg); }
+.play a:first-child { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.play a:only-child { grid-column: 1 / -1; }
+.play a[aria-disabled] { background: none; border-color: var(--rule); color: var(--dim); }
+.play small { display: block; font: 400 11px/1 var(--nums); opacity: .85; margin-top: 4px; }
+.track { height: 2px; background: var(--rule); border-radius: 1px; margin-top: -8px; }
+.track i { display: block; height: 100%; background: var(--accent); border-radius: 1px; }
+.summary { margin: 0; font-size: var(--s-row); line-height: 1.45; color: var(--dim); }
+.block { border-top: 1px solid var(--rule); }
+.block .row + .row { border-top: 1px solid var(--rule); }
+.people .row { grid-template-columns: 9ch minmax(0, 1fr) 4ch; }
+.role { font: 500 var(--s-label)/1.6 var(--words); letter-spacing: .07em; text-transform: uppercase; color: var(--dim); }
+.vers .row { grid-template-columns: 1.2em minmax(0, 1fr) 4ch 7ch; color: inherit; text-decoration: none; }
+.vers .star { color: var(--accent); font: var(--s-meta) var(--nums); }
+.acts .row { grid-template-columns: minmax(0, 1fr); width: 100%; border: 0; background: none; text-align: left; font: var(--s-row) var(--words); }
+.acts .row:disabled { color: var(--dim); }
+.path { font: 11px/1.5 var(--nums); color: var(--dim); overflow-wrap: anywhere; }
+
+/* settings */
+#settings .sheet { gap: 12px; }
+#settings h2 { font-size: var(--s-head); }
+#ver { font: var(--s-meta)/1.6 var(--nums); color: var(--dim); }
+#ver a { color: var(--accent); }
+#acct, .hint { margin: 0; color: var(--dim); font-size: var(--s-meta); }
+.lbl { font: 500 var(--s-label)/1 var(--words); letter-spacing: .07em; text-transform: uppercase; color: var(--dim); padding: 12px 16px 4px; }
+#libs label, .field { display: flex; align-items: center; gap: 12px; min-height: var(--row); padding: 0 16px; border-top: 1px solid var(--rule); cursor: pointer; }
+#libs label span { margin-left: auto; font: var(--s-meta) var(--nums); color: var(--dim); }
+#libs input { width: 20px; height: 20px; accent-color: var(--accent); }
+.field select { margin-left: auto; height: 40px; border: 1px solid var(--rule); border-radius: 6px; background: var(--bg); padding: 0 8px; max-width: 60%; }
+.btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.btns button { height: 48px; border: 1px solid var(--rule); border-radius: 8px; background: none; cursor: pointer; font-weight: 500; }
+.btns button.go { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
 </style>
 </head>
 <body>
-<header>
-  <input id="q" type="search" placeholder="filter…" autocomplete="off">
-  <select id="group">
-    <option value="">titles</option>
-    <option value="deck">on deck</option>
-    <option value="actor">actor</option>
-    <option value="director">director</option>
-    <option value="writer">writer</option>
-    <option value="studio">studio / network</option>
-    <option value="genre">genre</option>
-    <option value="decade">decade</option>
-    <option value="collection">collection</option>
-  </select>
-  <select id="sort">
-    <option value="title">a–z</option>
-    <option value="year">year</option>
-    <option value="added">added</option>
-    <option value="count">count</option>
-  </select>
-  <button id="settingsBtn">⚙</button>
-</header>
-<div id="crumb"></div>
-<ul id="list"></ul>
 <div id="status"></div>
+<ul id="list"></ul>
+
+<div class="bar" id="bar">
+  <div class="facets" id="facets" role="group" aria-label="Group by">
+    <button type="button" data-g="deck">Continue</button>
+    <button type="button" data-g="">Titles</button>
+    <button type="button" data-g="director">Director</button>
+    <button type="button" data-g="actor">Actor</button>
+    <button type="button" data-g="writer">Writer</button>
+    <button type="button" data-g="studio">Studio</button>
+    <button type="button" data-g="genre">Genre</button>
+    <button type="button" data-g="decade">Decade</button>
+    <button type="button" data-g="collection">Collection</button>
+  </div>
+  <button type="button" id="crumb"></button>
+  <div class="qrow">
+    <input id="q" type="search" placeholder="Filter" autocomplete="off" enterkeyhint="search" aria-label="Filter">
+    <select id="sort" aria-label="Sort">
+      <option value="title">A–Z</option>
+      <option value="year">Year</option>
+      <option value="added">Added</option>
+      <option value="count">Count</option>
+    </select>
+    <button type="button" id="settingsBtn" aria-label="Settings">⋯</button>
+  </div>
+</div>
 
 <dialog id="settings">
-  <p><b>TextPlex</b> <span id="ver" style="color:var(--dim)"></span></p>
-  <p id="acct">Not signed in.</p>
-  <div class="row">
-    <button id="signin">Sign in with Plex</button>
-    <button id="demo">Use demo data</button>
-    <button id="signout">Sign out</button>
+  <div class="sheet">
+    <div class="pad">
+      <h2>TextPlex</h2>
+      <div id="ver"></div>
+      <p id="acct">Not signed in.</p>
+    </div>
+    <div class="pad btns">
+      <button id="signin" class="go">Sign in with Plex</button>
+      <button id="demo">Use demo data</button>
+    </div>
+    <div>
+      <label class="field">Server <select id="server"></select></label>
+      <label class="field">Player <select id="player">
+        <option value="is.xyz.mpv">mpv</option>
+        <option value="org.videolan.vlc">VLC</option>
+        <option value="">Ask every time</option>
+      </select></label>
+    </div>
+    <div>
+      <div class="lbl">Libraries</div>
+      <p class="hint pad">The same title in several libraries shows once; the highest bitrate plays.</p>
+      <div id="libs"></div>
+    </div>
+    <div class="pad btns">
+      <button id="reload" class="go">Load selected</button>
+      <button id="refresh">Refresh now</button>
+      <button id="signout">Sign out</button>
+      <button id="closeSettings">Close</button>
+    </div>
   </div>
-  <p>Server <select id="server"></select></p>
-  <p>Libraries <span style="color:var(--dim)">(same title in several is merged; best bitrate plays)</span></p>
-  <div id="libs"></div>
-  <p>Player <select id="player">
-    <option value="is.xyz.mpv">mpv</option>
-    <option value="org.videolan.vlc">VLC</option>
-    <option value="">ask every time</option>
-  </select></p>
-  <div class="row"><button id="reload">Load selected</button><button id="refresh">Refresh now</button><button onclick="settings.close()">Close</button></div>
 </dialog>
 
 <dialog id="detail"></dialog>
@@ -82,7 +198,7 @@ const LS = {
   get: k => { try { return JSON.parse(localStorage.getItem('tp.' + k)); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem('tp.' + k, JSON.stringify(v)); } catch {} },
 };
-const VERSION = '0.00002'; // bump by 0.00001 on every release
+const VERSION = '0.00003'; // bump by 0.00001 on every release
 const PRODUCT = 'TextPlex';
 const CID = LS.get('cid') || (LS.set('cid', crypto.randomUUID()), LS.get('cid'));
 const plexHeaders = token => ({ Accept: 'application/json', 'X-Plex-Product': PRODUCT, 'X-Plex-Client-Identifier': CID, ...(token ? { 'X-Plex-Token': token } : {}) });
@@ -90,6 +206,7 @@ const plexHeaders = token => ({ Accept: 'application/json', 'X-Plex-Product': PR
 let items = [];          // flat list of playable or browsable items
 let server = null;       // { uri, token, name }
 let view = { value: null, show: null }; // drill state
+let group = '';          // active facet: '' titles, 'deck', or a facet name
 
 // ---------- Plex auth (PIN + forward flow) ----------
 async function signIn() {
@@ -148,7 +265,9 @@ function norm(m, lib) {
     dur: m.duration || 0, offset: m.viewOffset || 0, seen: (m.viewCount || 0) > 0,
     leaves: m.leafCount, parts: (m.Media || []).flatMap(md => (md.Part || []).map(p => ({ key: p.key, file: p.file, res: md.videoResolution, codec: md.videoCodec, size: p.size, kbps: md.bitrate || 0, h: md.height || 0, lib }))),
     ep: m.type === 'episode' ? `S${String(m.parentIndex).padStart(2, '0')}E${String(m.index).padStart(2, '0')}` : null,
+    season: m.type === 'episode' ? m.parentIndex : null, index: m.index ?? null, aired: m.originallyAvailableAt || null,
     show: m.grandparentTitle || null, showGuid: m.grandparentGuid || null, showKey: m.grandparentRatingKey || null,
+    thumb: m.thumb || m.parentThumb || m.grandparentThumb || null, art: m.art || null,
   };
 }
 // One row per title: same guid (or same type+title+year) across libraries is merged.
@@ -164,6 +283,7 @@ function merge(list, idOf) {
     for (const f of ['actor', 'director', 'writer', 'genre', 'collection']) m[f] = [...new Set([...m[f], ...it[f]])];
     m.seen ||= it.seen; m.offset = Math.max(m.offset, it.offset); m.added = Math.max(m.added, it.added);
     m.leaves = Math.max(m.leaves || 0, it.leaves || 0); m.studio ||= it.studio; m.year ||= it.year;
+    m.thumb ||= it.thumb; m.art ||= it.art; m.aired ||= it.aired;
   }
   for (const m of out.values()) m.parts.sort(byQuality);
   return [...out.values()];
@@ -195,7 +315,7 @@ async function pickLibraries() {
 }
 function showLibs() {
   const chosen = LS.get(libKey());
-  $('#libs').innerHTML = sections.map(s => `<label><input type="checkbox" value="${s.key}" ${!chosen || chosen.includes(s.key) ? 'checked' : ''}> ${esc(s.title)} <span style="color:var(--dim)">${s.type}</span></label>`).join('');
+  $('#libs').innerHTML = sections.map(s => `<label><input type="checkbox" value="${s.key}" ${!chosen || chosen.includes(s.key) ? 'checked' : ''}> ${esc(s.title)} <span>${s.type}</span></label>`).join('');
   return chosen;
 }
 async function loadLibrary() {
@@ -226,7 +346,7 @@ async function fillCast() {
     } catch (e) { status('Cast top-up failed: ' + e.message); return; }
   }
   saveLib(); libStatus();
-  if ($('#group').value) render();
+  if (group) render();
 }
 
 // ---------- On Deck and watch state ----------
@@ -277,70 +397,157 @@ async function act(it, what) {
   if (what !== 'unwatched') it.offset = what === 'watched' ? 0 : it.offset;
   LS.set('bust', Date.now()); // watch state changed: cached episodes and deck are stale
   saveLib();
-  if ($('#group').value === 'deck') await loadDeck(true); else render();
+  if (group === 'deck') await loadDeck(true); else render();
 }
+
+// ---------- Typography helpers ----------
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ART = /^(the|a|an) (?=\S)/i;
+const sortTitle = t => t.replace(ART, '');               // library-catalogue sort: ignore a leading article
+const fmtTitle = t => { const m = t.match(ART); return m ? `<span class="a">${esc(m[0].trim())}</span> ${esc(t.slice(m[0].length))}` : esc(t); };
+const PEOPLE = ['actor', 'director', 'writer'];
+const surname = n => { const i = n.lastIndexOf(' '); return i < 0 ? n : n.slice(i + 1) + ' ' + n.slice(0, i); };
+const fmtName = n => { const i = n.lastIndexOf(' '); return i < 0 ? `<b>${esc(n)}</b>` : `${esc(n.slice(0, i))} <b>${esc(n.slice(i + 1))}</b>`; };
+const initial = s => { const c = s.trim()[0]?.toUpperCase() || '#'; return /[A-Z]/.test(c) ? c : '#'; };
+const res = r => !r ? '' : r === '4k' ? '4K' : /^\d+$/.test(r) ? r : r.toUpperCase();
+const mins = ms => Math.round(ms / 60000);
+const hm = ms => { const m = mins(ms); return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} m` : m + ' m'; };
+const clock = ms => { const s = Math.round(ms / 1000); return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+const img = (path, w, h) => server && path ? `${server.uri}/photo/:/transcode?width=${w}&height=${h}&minSize=1&upscale=1&url=${encodeURIComponent(path)}&X-Plex-Token=${server.token}` : '';
 
 // ---------- Views ----------
 const facetOf = (it, f) => f === 'decade' ? (it.year ? [Math.floor(it.year / 10) * 10 + 's'] : [])
   : f === 'studio' ? (it.studio ? [it.studio] : []) : it[f] || [];
 const match = (s, q) => !q || s.toLowerCase().includes(q);
+const LABEL = { deck: 'Continue', '': 'Titles', director: 'Director', actor: 'Actor', writer: 'Writer', studio: 'Studio', genre: 'Genre', decade: 'Decade', collection: 'Collection' };
+// insert a section letter whenever the first letter of the sort key changes
+const lettered = (list, keyOf, rowOf) => { let last = null; return list.map(x => { const L = initial(keyOf(x)); const head = L !== last ? `<li class="letter" aria-hidden="true">${L}</li>` : ''; last = L; return head + rowOf(x); }); };
 
 function render() {
   const q = $('#q').value.trim().toLowerCase();
-  const g = $('#group').value, sort = $('#sort').value;
+  const sort = $('#sort').value;
   const list = $('#list');
-  let rows;
-  if (g === 'deck' && !view.show) {
-    $('#crumb').textContent = '';
+  let rows, count = null;
+  document.querySelectorAll('#facets button').forEach(b => b.setAttribute('aria-pressed', b.dataset.g === group));
+  if (group === 'deck' && !view.show) {
     if (!deck) { rows = []; if (server) loadDeck().catch(e => status(e.message)); }
     else rows = deck.filter(e => match([e.show, e.title, e.ep].join(' '), q)).map(e => itemRow(e, true));
+    count = deck?.length;
   } else if (view.show) {
-    $('#crumb').textContent = '‹ ' + view.show.title;
-    rows = view.episodes.filter(e => match(e.title + ' ' + e.ep, q)).map(itemRow);
-  } else if (g && !view.value) {
-    $('#crumb').textContent = '';
+    rows = showView(view.show, view.episodes, q);
+    count = view.episodes.length;
+  } else if (group && !view.value) {
     const counts = new Map();
-    for (const it of items) for (const v of facetOf(it, g)) counts.set(v, (counts.get(v) || 0) + 1);
+    for (const it of items) for (const v of facetOf(it, group)) counts.set(v, (counts.get(v) || 0) + 1);
+    const key = PEOPLE.includes(group) ? surname : v => v;
     let facets = [...counts].filter(([v]) => match(v, q));
-    facets.sort(sort === 'count' ? (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]) : (a, b) => a[0].localeCompare(b[0]));
-    rows = facets.map(([v, n]) => `<li data-facet="${esc(v)}"><span class="t">${esc(v)}</span><span class="m">${n}</span></li>`);
+    count = facets.length;
+    if (sort === 'count') rows = facets.sort((a, b) => b[1] - a[1] || key(a[0]).localeCompare(key(b[0]))).map(headword);
+    else rows = lettered(facets.sort((a, b) => key(a[0]).localeCompare(key(b[0]))), f => key(f[0]), headword);
   } else {
-    $('#crumb').textContent = view.value ? `‹ ${g}: ${view.value}` : '';
-    let its = view.value ? items.filter(it => facetOf(it, g).includes(view.value)) : items;
+    let its = view.value ? items.filter(it => facetOf(it, group).includes(view.value)) : items;
     // free text matches title and every facet, so "nolan" or "a24" works without switching group
     its = its.filter(it => match([it.title, it.year, it.studio, ...it.actor, ...it.director, ...it.writer, ...it.genre].join(' '), q));
-    const cmp = { title: (a, b) => a.title.localeCompare(b.title), year: (a, b) => (b.year || 0) - (a.year || 0), added: (a, b) => b.added - a.added }[sort] || ((a, b) => a.title.localeCompare(b.title));
-    rows = its.sort(cmp).map(itemRow);
+    count = its.length;
+    const byTitle = (a, b) => sortTitle(a.title).localeCompare(sortTitle(b.title)) || (a.year || 0) - (b.year || 0);
+    const cmp = { year: (a, b) => (b.year || 0) - (a.year || 0), added: (a, b) => b.added - a.added }[sort] || byTitle;
+    its.sort(cmp);
+    rows = cmp === byTitle ? lettered(its, it => sortTitle(it.title), it => itemRow(it)) : its.map(it => itemRow(it));
   }
-  list.innerHTML = rows.slice(0, 2000).join('') + (rows.length > 2000 ? `<li class="m">…${rows.length - 2000} more, keep typing</li>` : '');
+  list.innerHTML = rows.slice(0, 2000).join('') + (rows.length > 2000 ? `<li class="row more"><span class="t">${rows.length - 2000} more. Keep typing to narrow.</span></li>` : '');
+  // bottom bar: facets normally, the crumb once pivoted into a person, studio or show
+  const pivot = view.show ? ['Titles', view.show.title] : view.value ? [LABEL[group], view.value] : null;
+  $('#bar').classList.toggle('pivoted', !!pivot);
+  $('#crumb').innerHTML = pivot ? `<span class="back">‹ ${esc(pivot[0])}</span><b>${esc(pivot[1])}</b><span class="n">${count ?? ''}</span>` : '';
+  const total = view.show ? view.episodes.length : group && !view.value && group !== 'deck' ? null : (view.value ? items.filter(it => facetOf(it, group).includes(view.value)).length : group === 'deck' ? deck?.length : items.length);
+  $('#q').placeholder = pivot ? `Filter ${pivot[1]}` : group === 'deck' ? 'Filter Continue' : group ? `Filter ${LABEL[group].toLowerCase()}s` : `Filter ${total ?? ''} titles`;
 }
-const ver = p => [p.lib, res(p.res), p.codec, p.kbps ? (p.kbps / 1000).toFixed(1) + ' Mbps' : ''].filter(Boolean).join(' · ');
-const res = r => !r ? '' : /^\d+$/.test(r) ? r + 'p' : r;
-function itemRow(it, deckRow) {
-  const meta = it.type === 'show' ? `${it.year || ''} · ${it.leaves || '?'} ep` : `${it.ep || it.year || ''} ${res(it.parts[0]?.res)}${it.parts.length > 1 ? ' ×' + it.parts.length : ''}`;
-  const name = deckRow && it.show ? `${it.show} · ${it.title}` : it.title;
-  return `<li data-key="${it.key}" class="${it.seen && !deckRow ? 'seen' : ''}"><span class="t">${esc(name)}</span><span class="m">${esc(meta)}</span></li>`;
+function headword([v, n]) {
+  const name = PEOPLE.includes(group) ? fmtName(v) : esc(v);
+  return `<li class="grp"><details data-v="${esc(v)}"><summary class="row"><span class="t">${name}</span><span class="n k">${n}</span></summary><ul></ul></details></li>`;
+}
+// subentries are built when a headword opens, so thousands of actors stay cheap
+function fillGroup(d) {
+  const v = d.dataset.v, its = items.filter(it => facetOf(it, group).includes(v)).sort((a, b) => (b.year || 0) - (a.year || 0));
+  const show = its.slice(0, 12);
+  d.querySelector('ul').innerHTML = show.map(it => itemRow(it, false, 1)).join('') +
+    `<li class="row more" style="--lvl:1" data-facet="${esc(v)}"><span class="t">${its.length > show.length ? `All ${its.length}, ${its.at(-1).year || ''}–${its[0].year || ''}` : 'Only these'} ›</span></li>`;
+}
+function showView(show, eps, q) {
+  const seasons = new Map();
+  for (const e of eps) { if (!seasons.has(e.season)) seasons.set(e.season, []); seasons.get(e.season).push(e); }
+  const seen = eps.filter(e => e.seen).length;
+  const art = img(show.art || show.thumb, 720, 405);
+  const head = `<li class="showhead">${art ? `<img src="${art}" alt="" loading="lazy">` : ''}<div class="h"><span>${fmtTitle(show.title)}</span><span class="n">${show.year || ''}</span></div>` +
+    `<div class="n" style="text-align:left">${seasons.size} season${seasons.size === 1 ? '' : 's'} · ${eps.length} episodes · ${seen} watched</div></li>`;
+  // open the first season with something unwatched, or the last one
+  const next = [...seasons].find(([, es]) => es.some(e => !e.seen))?.[0] ?? [...seasons.keys()].at(-1);
+  const out = [...seasons].map(([s, es]) => {
+    const hit = es.filter(e => match(e.title + ' ' + e.ep, q));
+    if (!hit.length) return '';
+    const yrs = es.map(e => e.year || +(e.aired || '').slice(0, 4)).filter(Boolean);
+    const yr = yrs.length ? Math.min(...yrs) : '';
+    const name = s === 0 ? 'Specials' : 'Season ' + s;
+    return `<li class="grp season"><details ${q || s === next ? 'open' : ''}><summary class="row"><span class="t">${name}${yr ? ` <span class="y">· ${yr}</span>` : ''}</span><span class="n">${es.filter(e => e.seen).length}/${es.length}</span></summary><ul>` +
+      hit.map(e => epRow(e)).join('') + '</ul></details></li>';
+  });
+  return [head, ...out];
+}
+const progress = it => it.offset && !it.seen ? `<span class="left">${it.dur ? mins(it.dur - it.offset) + ' min left' : mins(it.offset) + ' min in'}</span>` : '';
+const state = it => (it.seen ? ' seen' : '') + (it.offset && !it.seen ? ' mid' : '');
+function epRow(e) {
+  return `<li class="row ep${state(e)}" style="--lvl:1" data-key="${e.key}"><span class="num">${String(e.index ?? '').padStart(2, '0')}</span><span class="t">${esc(e.title)}${progress(e)}</span><span class="n">${e.dur ? mins(e.dur) + 'm' : ''}</span></li>`;
+}
+function itemRow(it, deckRow, lvl = 0) {
+  const name = deckRow && it.show ? `<span class="a">${esc(it.show)} ›</span> ${esc(it.title)}` : fmtTitle(it.title);
+  const a = deckRow && it.ep ? it.ep : it.year || '';
+  const b = it.type === 'show' ? (it.leaves ? it.leaves + 'ep' : '') : res(it.parts[0]?.res);
+  return `<li class="row${deckRow ? (it.offset ? ' mid' : '') : state(it)}"${lvl ? ` style="--lvl:${lvl}"` : ''} data-key="${it.key}"><span class="t">${name}${progress(it)}</span><span class="n">${esc(a)}</span><span class="n${b === '4K' ? ' k' : ''}">${esc(b)}</span></li>`;
 }
 
+// ---------- Back: closes the sheet, then leaves the show or pivot (Android back gesture too) ----------
+const push = () => history.pushState({ tp: 1 }, '');
+const back = () => history.state?.tp ? history.back() : unwind();
+function unwind() {
+  if ($('#detail').open) return $('#detail').close();
+  if (view.show) { view.show = null; view.episodes = null; }
+  else if (view.value) view.value = null;
+  else return;
+  $('#q').value = ''; render();
+}
+addEventListener('popstate', unwind);
+
+function pivotTo(g, v) {
+  group = g; view = { value: v, show: null }; $('#q').value = '';
+  render(); scrollTo(0, 0);
+}
+$('#list').addEventListener('toggle', e => { if (e.target.open && e.target.dataset.v && !e.target.querySelector('ul li')) fillGroup(e.target); }, true);
 $('#list').onclick = async e => {
-  const li = e.target.closest('li');
+  const li = e.target.closest('li[data-key], li[data-facet]');
   if (!li) return;
-  if (li.dataset.facet) { view.value = li.dataset.facet; $('#q').value = ''; return render(); }
+  if (li.dataset.facet) { push(); return pivotTo(group, li.dataset.facet); }
   let it = (view.episodes || []).find(x => x.key === li.dataset.key) || items.find(x => x.key === li.dataset.key);
-  const fromDeck = $('#group').value === 'deck' && !view.show && deck?.find(x => x.key === li.dataset.key);
+  const fromDeck = group === 'deck' && !view.show && deck?.find(x => x.key === li.dataset.key);
   if (fromDeck) { status('Finding best copy…'); it = await bestCopy(fromDeck); status(''); return showDetail(it, fromDeck); }
   if (!it) return;
   if (it.type === 'show') {
-    if (!server) return alert('Demo data has no episodes');
+    if (!server) return status('Demo data has no episodes');
     status('Loading episodes…');
-    view.show = it; view.episodes = await episodesOf(it);
-    $('#q').value = ''; status(''); return render();
+    const eps = await episodesOf(it);
+    push(); view.show = it; view.episodes = eps;
+    $('#q').value = ''; status(''); render(); return scrollTo(0, 0);
   }
   showDetail(it);
 };
-$('#crumb').onclick = () => { if (view.show) { view.show = null; view.episodes = null; } else view.value = null; render(); };
+$('#crumb').onclick = back;
 $('#q').oninput = render;
-$('#group').onchange = () => { view.value = null; view.show = null; if ($('#group').value === 'deck') deck = null; render(); };
+$('#facets').onclick = e => {
+  const b = e.target.closest('[data-g]');
+  if (!b) return;
+  group = b.dataset.g; view = { value: null, show: null };
+  if (group === 'deck') deck = null;
+  render(); scrollTo(0, 0);
+};
 $('#sort').onchange = render;
 
 // ---------- Direct play hand-off ----------
@@ -358,37 +565,58 @@ function intentUrl(it, part, fromStart) {
   return `intent://${u.host}${u.pathname}${u.search}#Intent;scheme=${u.protocol.slice(0, -1)};action=android.intent.action.VIEW;type=video/*;` +
     (pkg ? `package=${pkg};` : '') + extras.join(';') + ';end';
 }
+const PLAYER = { 'is.xyz.mpv': 'mpv', 'org.videolan.vlc': 'VLC', '': 'choose player' };
 function showDetail(it, deckItem) {
   const d = $('#detail');
   const part = it.parts[0];
-  const line = (k, v) => v && v.length ? `<p><b>${k}</b> ${esc([].concat(v).join(', '))}</p>` : '';
-  const mins = it.dur ? Math.round(it.dur / 60000) + ' min' : '';
-  const resume = it.offset ? Math.round(it.offset / 60000) + ' min in' : '';
-  d.innerHTML = `<p><b>${esc(it.show ? it.show + ' ' + it.ep + ' · ' : '')}${esc(it.title)}</b> ${it.year || ''} ${esc(it.rating)} ${mins}</p>` +
-    line('Director', it.director) + line('Writer', it.writer) + line('Cast', it.actor.slice(0, 15)) +
-    line('Studio', it.studio || []) + line('Genre', it.genre) +
-    (part ? `<p class="m" style="color:var(--dim)">${esc(part.file || '')}</p>` : '') +
-    `<div class="row">` +
-    (server && part ? (resume ? `<a href="${intentUrl(it, part, false)}"><button>▶ Resume (${resume})</button></a>` : '') +
-      `<a href="${intentUrl(it, part, true)}"><button>▶ Play${resume ? ' from start' : ''}</button></a>` +
-      `<button id="copy">Copy URL</button>` : `<button disabled>Play (demo data)</button>`) +
-    `<button onclick="detail.close()">Close</button></div>` +
-    (server ? `<div class="row"><button data-act="${it.seen ? 'unwatched' : 'watched'}">Mark ${it.seen ? 'unwatched' : 'watched'}</button>` +
-      (deckItem ? `<button data-act="remove">Remove from On Deck</button>` : '') + `</div>` : '') +
-    it.parts.map((p, i) => `<p style="color:var(--dim)">${i ? '' : '★ '}${esc(ver(p))}` +
-      (i && server ? ` <a href="${intentUrl(it, p, true)}">play this</a>` : '') + '</p>').join('');
+  const facts = [it.show ? it.ep : '', it.year, it.rating, it.dur ? hm(it.dur) : '', it.studio].filter(Boolean).join(' · ');
+  const counts = f => v => items.filter(x => facetOf(x, f).includes(v)).length;
+  const person = (role, f) => (v, i) => `<li class="row" data-f="${f}" data-v="${esc(v)}"><span class="role">${i ? '' : role}</span><span class="t">${esc(v)}</span><span class="n">${counts(f)(v) || ''}</span></li>`;
+  const cast = it.actor.slice(0, 15);
+  const poster = img(it.thumb, 168, 252);
+  const player = PLAYER[LS.get('player') ?? 'is.xyz.mpv'];
+  d.innerHTML = `<div class="sheet">
+    <div class="pad head${poster ? '' : ' noimg'}">${poster ? `<img src="${poster}" alt="">` : ''}<div>
+      <h2>${it.show ? `<span class="a">${esc(it.show)} ›</span> ` : ''}${fmtTitle(it.title)}</h2><div class="facts">${esc(facts)}</div></div></div>` +
+    (server && part ? `<div class="pad play">` +
+      (it.offset ? `<a href="${intentUrl(it, part, false)}">Resume<small>${clock(it.offset)}</small></a>` : '') +
+      `<a href="${intentUrl(it, part, true)}">${it.offset ? 'From start' : 'Play'}<small>${esc(player)}</small></a></div>` +
+      (it.offset && it.dur ? `<div class="pad"><div class="track"><i style="width:${Math.min(100, it.offset / it.dur * 100).toFixed(1)}%"></i></div></div>` : '')
+      : `<div class="pad play"><a aria-disabled="true">Play<small>not in demo</small></a></div>`) +
+    (it.summary ? `<p class="pad summary">${esc(it.summary)}</p>` : '') +
+    `<ul class="block people">` +
+      it.director.map(person('Director', 'director')).join('') + it.writer.slice(0, 3).map(person('Writer', 'writer')).join('') +
+      cast.slice(0, 4).map(person('Cast', 'actor')).join('') +
+      (cast.length > 4 ? `<li class="row more" data-morecast><span class="role"></span><span class="t">${cast.length - 4} more</span></li>` : '') +
+      it.genre.map(person('Genre', 'genre')).join('') + (it.studio ? person('Studio', 'studio')(it.studio, 0) : '') +
+    `</ul>` +
+    (it.parts.length ? `<ul class="block vers">` + it.parts.map((p, i) =>
+      `<li><a class="row" ${server ? `href="${intentUrl(it, p, true)}"` : ''}><span class="star">${i ? '' : '★'}</span><span class="t"${i ? ' style="color:var(--dim)"' : ''}>${esc(p.lib)}</span><span class="n${res(p.res) === '4K' ? ' k' : ''}">${esc(res(p.res))}</span><span class="n">${p.kbps ? (p.kbps / 1000).toFixed(1) + ' Mb' : ''}</span></a></li>`).join('') + `</ul>` : '') +
+    `<ul class="block acts">` +
+      (server ? `<li><button class="row" data-act="${it.seen ? 'unwatched' : 'watched'}">Mark ${it.seen ? 'unwatched' : 'watched'}</button></li>` +
+        (deckItem ? `<li><button class="row" data-act="remove">Remove from Continue</button></li>` : '') +
+        (part ? `<li><button class="row" id="copy">Copy stream URL</button></li>` : '') : '') +
+      `<li><button class="row" id="closeDetail">Close</button></li></ul>` +
+    (part?.file ? `<div class="pad path">${esc(part.file)}</div>` : '') + `</div>`;
+  const more = d.querySelector('[data-morecast]');
+  if (more) more.onclick = () => { more.outerHTML = cast.slice(4).map((v, i) => person('Cast', 'actor')(v, i + 1)).join(''); };
+  d.querySelectorAll('.people').forEach(ul => ul.onclick = e => {
+    const r = e.target.closest('[data-f]');
+    if (r) { d.close(); pivotTo(r.dataset.f, r.dataset.v); } // replaces the sheet's history entry with the pivot
+  });
   const c = d.querySelector('#copy');
   if (c) c.onclick = () => navigator.clipboard.writeText(streamUrl(part)).then(() => c.textContent = 'Copied');
+  d.querySelector('#closeDetail').onclick = back;
   d.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
     b.disabled = true;
     // remove targets the deck entry itself; watched state goes to every merged copy
-    act(b.dataset.act === 'remove' ? deckItem : it, b.dataset.act).then(() => d.close(), e => { b.textContent = e.message; });
+    act(b.dataset.act === 'remove' ? deckItem : it, b.dataset.act).then(back, e => { b.textContent = e.message; });
   });
-  d.showModal();
+  if (!d.open) { push(); d.showModal(); d.scrollTop = 0; }
 }
+$('#detail').addEventListener('cancel', e => { e.preventDefault(); back(); });
 
 // ---------- Settings / boot ----------
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const status = s => $('#status').textContent = s;
 $('#ver').textContent = 'v' + VERSION;
 // rollbacks: the last 10 releases stay live under v/<version>/
@@ -396,7 +624,8 @@ fetch(new URL('v/versions.json', location.href.replace(/v\/[\d.]+\/.*$/, ''))).t
   $('#ver').innerHTML = 'v' + VERSION + ' · older: ' + vs.filter(v => v !== VERSION).map(v => `<a href="${location.href.replace(/(v\/[\d.]+\/)?[^/]*$/, '')}v/${v}/">${v}</a>`).join(' ') || 'none';
 }).catch(() => {});
 $('#settingsBtn').onclick = () => settings.showModal();
-$('#signin').onclick = () => signIn().catch(e => alert(e.message));
+$('#closeSettings').onclick = () => settings.close();
+$('#signin').onclick = () => signIn().catch(e => status(e.message));
 $('#signout').onclick = () => { LS.set('token', null); location.reload(); };
 $('#player').value = LS.get('player') ?? 'is.xyz.mpv';
 $('#player').onchange = e => LS.set('player', e.target.value);
@@ -413,7 +642,7 @@ $('#demo').onclick = async () => {
 (async () => {
   try {
     await finishSignIn();
-    if (!LS.get('token')) { status('Open ⚙ to sign in, or try demo data.'); return settings.showModal(); }
+    if (!LS.get('token')) { status('Open ⋯ to sign in, or try demo data.'); return settings.showModal(); }
     $('#acct').textContent = 'Signed in.';
     const c = await idb.get(ck('lib'));
     if (c) {
@@ -430,6 +659,7 @@ $('#demo').onclick = async () => {
     settings.showModal();
   } catch (e) { status('Error: ' + e.message); }
 })();
+render();
 </script>
 </body>
 </html>
