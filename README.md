@@ -22,3 +22,7 @@ One static page, no backend. Your Plex token stays in your browser.
 
 - Watched status and resume points are not sent back to Plex.
 - The stream URL includes the server's access token, so it may show in the player's history.
+
+## Versioning
+
+Starts at v0.00001 and goes up by 0.00001 with every release. The version is the `VERSION` constant in `index.html`, shown in ⚙, and each release commit is tagged `vX.XXXXX`.

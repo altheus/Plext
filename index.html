@@ -55,7 +55,7 @@ a { color:var(--acc); }
 <div id="status"></div>
 
 <dialog id="settings">
-  <p><b>TextPlex</b></p>
+  <p><b>TextPlex</b> <span id="ver" style="color:var(--dim)"></span></p>
   <p id="acct">Not signed in.</p>
   <div class="row">
     <button id="signin">Sign in with Plex</button>
@@ -70,7 +70,7 @@ a { color:var(--acc); }
     <option value="org.videolan.vlc">VLC</option>
     <option value="">ask every time</option>
   </select></p>
-  <div class="row"><button id="reload">Load selected</button><button onclick="settings.close()">Close</button></div>
+  <div class="row"><button id="reload">Load selected</button><button id="refresh">Refresh now</button><button onclick="settings.close()">Close</button></div>
 </dialog>
 
 <dialog id="detail"></dialog>
@@ -82,6 +82,7 @@ const LS = {
   get: k => { try { return JSON.parse(localStorage.getItem('tp.' + k)); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem('tp.' + k, JSON.stringify(v)); } catch {} },
 };
+const VERSION = '0.00001'; // bump by 0.00001 on every release
 const PRODUCT = 'TextPlex';
 const CID = LS.get('cid') || (LS.set('cid', crypto.randomUUID()), LS.get('cid'));
 const plexHeaders = token => ({ Accept: 'application/json', 'X-Plex-Product': PRODUCT, 'X-Plex-Client-Identifier': CID, ...(token ? { 'X-Plex-Token': token } : {}) });
@@ -169,10 +170,30 @@ function merge(list, idOf) {
 }
 const titleId = it => it.guid && !it.guid.startsWith('local://') ? it.guid : `${it.type}|${it.title.toLowerCase()}|${it.year || ''}`;
 
+// ---------- Cache: everything lives in IndexedDB, refreshed at most every 6 hours ----------
+const MAX_AGE = 6 * 3600e3;
+const idb = (() => {
+  const open = new Promise((ok, no) => { try { const r = indexedDB.open('textplex', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); } catch (e) { no(e); } });
+  const tx = (mode, fn) => open.then(db => new Promise((ok, no) => { const t = db.transaction('kv', mode); const r = fn(t.objectStore('kv')); t.oncomplete = () => ok(r.result); t.onerror = () => no(t.error); }));
+  return {
+    get: k => tx('readonly', st => st.get(k)).catch(() => null),
+    set: (k, v) => tx('readwrite', st => st.put(v, k)).catch(() => null),
+    clear: () => tx('readwrite', st => st.clear()).catch(() => null),
+  };
+})();
+const ck = name => name + '.' + (LS.get('serverId') || 'default');
+const fresh = c => c && Date.now() - c.at < MAX_AGE && c.at > (LS.get('bust') || 0);
+const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago'; };
+let libAt = 0;
+const saveLib = () => idb.set(ck('lib'), { at: libAt, server, sections, items });
+
 let sections = [];
 const libKey = () => 'libs.' + (LS.get('serverId') || 'default');
 async function pickLibraries() {
   sections = (await pms('/library/sections')).MediaContainer.Directory.filter(d => d.type === 'movie' || d.type === 'show');
+  return showLibs();
+}
+function showLibs() {
   const chosen = LS.get(libKey());
   $('#libs').innerHTML = sections.map(s => `<label><input type="checkbox" value="${s.key}" ${!chosen || chosen.includes(s.key) ? 'checked' : ''}> ${esc(s.title)} <span style="color:var(--dim)">${s.type}</span></label>`).join('');
   return chosen;
@@ -187,6 +208,7 @@ async function loadLibrary() {
     all.push(...(j.MediaContainer.Metadata || []).map(m => norm(m, s.title)));
   }
   items = merge(all, titleId);
+  libAt = Date.now(); saveLib();
   render();
   fillCast(); // list endpoints only return a few actors per title; top up in background
 }
@@ -203,16 +225,22 @@ async function fillCast() {
       }
     } catch (e) { status('Cast top-up failed: ' + e.message); return; }
   }
-  status(`${items.length} titles · ${server.name}${server.relay ? ' (relay)' : ''}`);
+  saveLib(); libStatus();
   if ($('#group').value) render();
 }
 
 // ---------- On Deck and watch state ----------
 let deck = null;
-async function loadDeck() {
-  status('Loading On Deck…');
-  const j = await pms('/library/onDeck');
-  deck = (j.MediaContainer.Metadata || []).map(m => norm(m, j.MediaContainer.librarySectionTitle || ''));
+const libStatus = () => status(`${items.length} titles · ${server?.name || ''}${server?.relay ? ' (relay)' : ''} · updated ${ago(libAt)}`);
+async function loadDeck(force) {
+  const c = await idb.get(ck('deck'));
+  if (!force && fresh(c)) deck = c.deck;
+  else {
+    status('Loading On Deck…');
+    const j = await pms('/library/onDeck');
+    deck = (j.MediaContainer.Metadata || []).map(m => norm(m, j.MediaContainer.librarySectionTitle || ''));
+    idb.set(ck('deck'), { at: Date.now(), deck });
+  }
   status(`${deck.length} on deck`);
   render();
 }
@@ -225,12 +253,16 @@ async function bestCopy(it) {
   return { ...(eps.find(e => e.ep === it.ep) || it), offset: it.offset };
 }
 async function episodesOf(show) {
+  const c = await idb.get(ck('eps.' + show.key));
+  if (fresh(c)) return c.eps;
   const eps = [];
   for (const k of show.keys) {
     const j = await pms(`/library/metadata/${k}/allLeaves`);
     eps.push(...(j.MediaContainer.Metadata || []).map(m => norm(m, j.MediaContainer.librarySectionTitle || '')));
   }
-  return merge(eps, e => e.ep).sort((a, b) => a.ep.localeCompare(b.ep));
+  const merged = merge(eps, e => e.ep).sort((a, b) => a.ep.localeCompare(b.ep));
+  idb.set(ck('eps.' + show.key), { at: Date.now(), eps: merged });
+  return merged;
 }
 // Applied to every copy, so a merged title is watched everywhere.
 async function act(it, what) {
@@ -243,7 +275,9 @@ async function act(it, what) {
   }
   it.seen = what === 'watched' ? true : what === 'unwatched' ? false : it.seen;
   if (what !== 'unwatched') it.offset = what === 'watched' ? 0 : it.offset;
-  if ($('#group').value === 'deck') await loadDeck(); else render();
+  LS.set('bust', Date.now()); // watch state changed: cached episodes and deck are stale
+  saveLib();
+  if ($('#group').value === 'deck') await loadDeck(true); else render();
 }
 
 // ---------- Views ----------
@@ -356,11 +390,13 @@ function showDetail(it, deckItem) {
 // ---------- Settings / boot ----------
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const status = s => $('#status').textContent = s;
+$('#ver').textContent = 'v' + VERSION;
 $('#settingsBtn').onclick = () => settings.showModal();
 $('#signin').onclick = () => signIn().catch(e => alert(e.message));
 $('#signout').onclick = () => { LS.set('token', null); location.reload(); };
 $('#player').value = LS.get('player') ?? 'is.xyz.mpv';
 $('#player').onchange = e => LS.set('player', e.target.value);
+$('#refresh').onclick = async () => { await idb.clear(); location.reload(); };
 $('#reload').onclick = () => { settings.close(); view = { value: null, show: null }; loadLibrary().catch(e => status(e.message)); };
 $('#demo').onclick = async () => {
   settings.close();
@@ -375,6 +411,14 @@ $('#demo').onclick = async () => {
     await finishSignIn();
     if (!LS.get('token')) { status('Open ⚙ to sign in, or try demo data.'); return settings.showModal(); }
     $('#acct').textContent = 'Signed in.';
+    const c = await idb.get(ck('lib'));
+    if (c) {
+      // show the cached library at once; the connection is re-checked quietly because it can change (home vs away)
+      ({ server, sections, items } = c); libAt = c.at;
+      showLibs(); render(); libStatus();
+      discover().then(s => { server = s; libStatus(); if (Date.now() - libAt > MAX_AGE) loadLibrary(); }).catch(e => status('Offline? ' + e.message));
+      return;
+    }
     status('Finding server…');
     server = await discover();
     if (await pickLibraries()) return loadLibrary();
